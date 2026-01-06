@@ -9,6 +9,9 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// pro-fast-project
+// kO1RtKn28qIV2ktx
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.dvetdgy.mongodb.net/proFastDB?retryWrites=true&w=majority`;
 
 const client = new MongoClient(uri, {
