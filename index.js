@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
+const { ObjectId } = require("mongodb");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -75,9 +76,9 @@ async function run() {
           });
         }
 
-        // Fetch parcels where senderEmail matches the email
         const parcels = await parcelsCollection
           .find({ senderEmail: email })
+          .sort({ createdAt: -1 }) // 🔥 newest first
           .toArray();
 
         res.status(200).json({
@@ -90,6 +91,24 @@ async function run() {
           success: false,
           message: "Failed to fetch parcels",
         });
+      }
+    });
+
+    app.delete("/parcels/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const result = await parcelsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ message: "Parcel not found" });
+        }
+
+        res.json({ success: true, message: "Parcel deleted" });
+      } catch (err) {
+        res.status(500).json({ message: "Delete failed" });
       }
     });
 
