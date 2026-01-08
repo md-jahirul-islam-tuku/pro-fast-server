@@ -6,6 +6,8 @@ const { ObjectId } = require("mongodb");
 
 const app = express();
 const port = process.env.PORT || 3000;
+const Stripe = require("stripe");
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -65,6 +67,28 @@ async function run() {
       }
     });
 
+    app.post("/create-payment-intent", async (req, res) => {
+      try {
+        const { amount } = req.body; // amount in cents
+
+        if (!amount) {
+          return res.status(400).json({ message: "Amount is required" });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount * 100, // e.g. 500 = ৳5.00 (or $5)
+          currency: "usd", // or "bdt" if supported
+          payment_method_types: ["card"],
+        });
+
+        res.json({
+          clientSecret: paymentIntent.client_secret,
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
     app.get("/parcels/:email", async (req, res) => {
       try {
         const email = req.params.email;
@@ -90,6 +114,42 @@ async function run() {
         res.status(500).json({
           success: false,
           message: "Failed to fetch parcels",
+        });
+      }
+    });
+
+    app.get("/parcel/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        // 🔒 Validate ObjectId
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid parcel ID",
+          });
+        }
+
+        const parcel = await parcelsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!parcel) {
+          return res.status(404).json({
+            success: false,
+            message: "Parcel not found",
+          });
+        }
+
+        res.status(200).json({
+          success: true,
+          data: parcel,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({
+          success: false,
+          message: "Server error",
         });
       }
     });
