@@ -33,6 +33,7 @@ async function run() {
     console.log("✅ MongoDB Connected");
 
     parcelsCollection = client.db("proFastDB").collection("parcels");
+    paymentsCollection = client.db("proFastDB").collection("payments");
 
     // =============================
     // POST: Add Parcel
@@ -103,6 +104,79 @@ async function run() {
       } catch (error) {
         res.status(500).json({ message: error.message });
       }
+    });
+
+    app.post("/payments", async (req, res) => {
+      try {
+        const {
+          parcelId,
+          paymentIntentId,
+          amount,
+          customerEmail,
+          customerName,
+        } = req.body;
+
+        if (!ObjectId.isValid(parcelId)) {
+          return res.status(400).json({ message: "Invalid parcel ID" });
+        }
+
+        const parcel = await parcelsCollection.findOne({
+          _id: new ObjectId(parcelId),
+        });
+
+        if (!parcel) {
+          return res.status(404).json({ message: "Parcel not found" });
+        }
+
+        // Prevent duplicate payment
+        if (parcel.paymentStatus === "paid") {
+          return res.status(400).json({ message: "Parcel already paid" });
+        }
+
+        // 1️⃣ Store payment history
+        const paymentDoc = {
+          parcelId: new ObjectId(parcelId),
+          parcelTitle: parcel.title,
+          amount,
+          currency: "usd",
+          paymentIntentId,
+          transactionId: paymentIntentId,
+          customerName,
+          customerEmail,
+          status: "succeeded",
+          createdAt: new Date(),
+        };
+
+        await paymentsCollection.insertOne(paymentDoc);
+
+        // 2️⃣ Update parcel payment status
+        await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          {
+            $set: {
+              paymentStatus: "paid",
+              transactionId: paymentIntentId,
+              paidAt: new Date(),
+            },
+          }
+        );
+
+        res.status(201).json({
+          success: true,
+          message: "Payment stored successfully",
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    app.get("/payments/:email", async (req, res) => {
+      const payments = await paymentsCollection
+        .find({ customerEmail: req.params.email })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(payments);
     });
 
     app.get("/parcels/:email", async (req, res) => {
