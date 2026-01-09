@@ -69,19 +69,35 @@ async function run() {
 
     app.post("/create-payment-intent", async (req, res) => {
       try {
-        const { amount } = req.body; // amount in cents
+        const { parcelId, customerName, customerEmail } = req.body;
 
-        if (!amount) {
-          return res.status(400).json({ message: "Amount is required" });
+        if (!parcelId) {
+          return res.status(400).json({ message: "Parcel ID is required" });
+        }
+
+        // 🔐 Always calculate amount from DB
+        const parcel = await parcelsCollection.findOne({
+          _id: new ObjectId(parcelId),
+        });
+
+        if (!parcel) {
+          return res.status(404).json({ message: "Parcel not found" });
         }
 
         const paymentIntent = await stripe.paymentIntents.create({
-          amount: amount * 100, // e.g. 500 = ৳5.00 (or $5)
-          currency: "usd", // or "bdt" if supported
-          payment_method_types: ["card"],
+          amount: parcel.cost * 100, // cents
+          currency: "usd", // use USD unless BDT enabled
+          automatic_payment_methods: {
+            enabled: true,
+          },
+          metadata: {
+            parcelId: parcel._id.toString(),
+            customerName: customerName,
+            customerEmail: customerEmail,
+          },
         });
 
-        res.json({
+        res.send({
           clientSecret: paymentIntent.client_secret,
         });
       } catch (error) {
