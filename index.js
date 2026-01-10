@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const { ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -12,8 +13,30 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 app.use(cors());
 app.use(express.json());
 
-// pro-fast-project
-// kO1RtKn28qIV2ktx
+admin.initializeApp({
+  credential: admin.credential.cert(
+    JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+  ),
+});
+
+const verifyFirebaseToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    const decodedUser = await admin.auth().verifyIdToken(token);
+
+    req.user = decodedUser; // email, uid, name, picture
+    next();
+  } catch (error) {
+    res.status(403).send({ message: "Forbidden" });
+  }
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.dvetdgy.mongodb.net/proFastDB?retryWrites=true&w=majority`;
 
@@ -34,11 +57,10 @@ async function run() {
 
     parcelsCollection = client.db("proFastDB").collection("parcels");
     paymentsCollection = client.db("proFastDB").collection("payments");
+    usersCollection = client.db("proFastDB").collection("users");
 
-    // =============================
     // POST: Add Parcel
-    // =============================
-    app.post("/parcels", async (req, res) => {
+    app.post("/parcels", verifyFirebaseToken, async (req, res) => {
       try {
         const parcel = req.body;
 
@@ -67,46 +89,102 @@ async function run() {
         });
       }
     });
-
-    app.post("/create-payment-intent", async (req, res) => {
+    // POST: Add Users
+    app.post("/users", verifyFirebaseToken, async (req, res) => {
       try {
-        const { parcelId, customerName, customerEmail } = req.body;
+        const { name, email, photoURL } = req.body;
 
-        if (!parcelId) {
-          return res.status(400).json({ message: "Parcel ID is required" });
+        if (!email) {
+          return res.status(400).json({ message: "Email is required" });
         }
 
-        // 🔐 Always calculate amount from DB
-        const parcel = await parcelsCollection.findOne({
-          _id: new ObjectId(parcelId),
-        });
+        const existingUser = await usersCollection.findOne({ email });
 
-        if (!parcel) {
-          return res.status(404).json({ message: "Parcel not found" });
+        if (!existingUser) {
+          // 🆕 New user (REGISTER)
+          const newUser = {
+            name,
+            email,
+            photoURL,
+            role: "user",
+            createdAt: new Date(),
+            lastLoginAt: new Date(),
+          };
+
+          await usersCollection.insertOne(newUser);
+
+          return res.json({
+            success: true,
+            message: "User created",
+            type: "register",
+          });
+        } else {
+          // 🔁 Existing user (LOGIN)
+          await usersCollection.updateOne(
+            { email },
+            {
+              $set: {
+                lastLoginAt: new Date(),
+                name,
+                photoURL,
+              },
+            }
+          );
+
+          return res.json({
+            success: true,
+            message: "Login time updated",
+            type: "login",
+          });
         }
-
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: parcel.cost * 100, // cents
-          currency: "usd", // use USD unless BDT enabled
-          automatic_payment_methods: {
-            enabled: true,
-          },
-          metadata: {
-            parcelId: parcel._id.toString(),
-            customerName: customerName,
-            customerEmail: customerEmail,
-          },
-        });
-
-        res.send({
-          clientSecret: paymentIntent.client_secret,
-        });
       } catch (error) {
         res.status(500).json({ message: error.message });
       }
     });
+    // POST: Pay to stripe
+    app.post(
+      "/create-payment-intent",
+      verifyFirebaseToken,
+      async (req, res) => {
+        try {
+          const { parcelId, customerName, customerEmail } = req.body;
 
-    app.post("/payments", async (req, res) => {
+          if (!parcelId) {
+            return res.status(400).json({ message: "Parcel ID is required" });
+          }
+
+          // 🔐 Always calculate amount from DB
+          const parcel = await parcelsCollection.findOne({
+            _id: new ObjectId(parcelId),
+          });
+
+          if (!parcel) {
+            return res.status(404).json({ message: "Parcel not found" });
+          }
+
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: parcel.cost * 100, // cents
+            currency: "usd", // use USD unless BDT enabled
+            automatic_payment_methods: {
+              enabled: true,
+            },
+            metadata: {
+              parcelId: parcel._id.toString(),
+              customerName: customerName,
+              customerEmail: customerEmail,
+            },
+          });
+
+          res.send({
+            clientSecret: paymentIntent.client_secret,
+          });
+        } catch (error) {
+          res.status(500).json({ message: error.message });
+        }
+      }
+    );
+    // POST: Add Parcel
+    app.post("/payments", verifyFirebaseToken, async (req, res) => {
       try {
         const {
           parcelId,
@@ -169,8 +247,8 @@ async function run() {
         res.status(500).json({ message: error.message });
       }
     });
-
-    app.get("/payments/:email", async (req, res) => {
+    // POST: Add Parcel
+    app.get("/payments/:email", verifyFirebaseToken, async (req, res) => {
       const payments = await paymentsCollection
         .find({ customerEmail: req.params.email })
         .sort({ createdAt: -1 })
@@ -178,8 +256,8 @@ async function run() {
 
       res.send(payments);
     });
-
-    app.get("/parcels/:email", async (req, res) => {
+    // POST: Add Parcel
+    app.get("/parcels/:email", verifyFirebaseToken, async (req, res) => {
       try {
         const email = req.params.email;
 
@@ -207,8 +285,8 @@ async function run() {
         });
       }
     });
-
-    app.get("/parcel/:id", async (req, res) => {
+    // POST: Add Parcel
+    app.get("/parcel/:id", verifyFirebaseToken, async (req, res) => {
       try {
         const { id } = req.params;
 
@@ -243,8 +321,8 @@ async function run() {
         });
       }
     });
-
-    app.delete("/parcels/:id", async (req, res) => {
+    // POST: Add Parcel
+    app.delete("/parcels/:id", verifyFirebaseToken, async (req, res) => {
       try {
         const id = req.params.id;
 
