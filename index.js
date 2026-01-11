@@ -58,6 +58,7 @@ async function run() {
     parcelsCollection = client.db("proFastDB").collection("parcels");
     paymentsCollection = client.db("proFastDB").collection("payments");
     usersCollection = client.db("proFastDB").collection("users");
+    ridersCollection = client.db("proFastDB").collection("riders");
 
     // POST: Add Parcel
     app.post("/parcels", verifyFirebaseToken, async (req, res) => {
@@ -141,6 +142,82 @@ async function run() {
         res.status(500).json({ message: error.message });
       }
     });
+
+    app.post("/riders", async (req, res) => {
+      try {
+        const rider = req.body;
+
+        if (!rider.email || !rider.name) {
+          return res.status(400).json({ message: "Missing required fields" });
+        }
+
+        // ❌ Prevent duplicate application
+        const existing = await ridersCollection.findOne({ email: rider.email });
+        if (existing) {
+          return res
+            .status(409)
+            .json({ message: "You already applied as a rider" });
+        }
+
+        const riderData = {
+          ...rider,
+          status: "pending",
+          createdAt: new Date(),
+        };
+
+        const result = await ridersCollection.insertOne(riderData);
+
+        res.status(201).json({
+          success: true,
+          message: "Rider application submitted",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    app.get("/riders/pending", async (req, res) => {
+      try {
+        const riders = await ridersCollection
+          .find({ status: "pending" })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          data: riders,
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    app.patch("/riders/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        if (!["approved", "denied"].includes(status)) {
+          return res.status(400).json({ message: "Invalid status" });
+        }
+
+        const result = await ridersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              status,
+              reviewedAt: new Date(),
+            },
+          }
+        );
+
+        res.json({ success: true, modifiedCount: result.modifiedCount });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
     // POST: Pay to stripe
     app.post(
       "/create-payment-intent",
