@@ -177,10 +177,75 @@ async function run() {
       }
     });
 
+    app.get("/users", async (req, res) => {
+      try {
+        const users = await usersCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          data: users,
+        });
+      } catch (error) {
+        res.status(500).json({ message: "Failed to fetch users" });
+      }
+    });
+
+    // Update user role (admin <-> user)
+    app.patch("/users/role/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+        const { role } = req.body;
+
+        if (!email || !role) {
+          return res.status(400).json({ message: "Email and role required" });
+        }
+
+        const result = await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              role,
+              roleUpdatedAt: new Date(),
+            },
+          }
+        );
+
+        res.json({
+          success: true,
+          message: `Role updated to ${role}`,
+          result,
+        });
+      } catch (err) {
+        res.status(500).json({ message: err.message });
+      }
+    });
+
+    app.get("/users/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        res.json({
+          success: true,
+          data: user,
+        });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
     app.get("/riders/pending", async (req, res) => {
       try {
         const riders = await ridersCollection
-          .find({ status: "pending" })
+          .find()
           .sort({ createdAt: -1 })
           .toArray();
 
@@ -193,16 +258,41 @@ async function run() {
       }
     });
 
+    app.get("/riders", async (req, res) => {
+      try {
+        const { status } = req.query;
+
+        const query = status ? { status } : {};
+        const riders = await ridersCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({ success: true, data: riders });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
     app.patch("/riders/:id", async (req, res) => {
       try {
         const { id } = req.params;
         const { status } = req.body;
 
-        if (!["approved", "denied"].includes(status)) {
+        if (!["approved", "denied", "pending"].includes(status)) {
           return res.status(400).json({ message: "Invalid status" });
         }
 
-        const result = await ridersCollection.updateOne(
+        const rider = await ridersCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!rider) {
+          return res.status(404).json({ message: "Rider not found" });
+        }
+
+        // 1️⃣ Update rider status
+        await ridersCollection.updateOne(
           { _id: new ObjectId(id) },
           {
             $set: {
@@ -212,7 +302,27 @@ async function run() {
           }
         );
 
-        res.json({ success: true, modifiedCount: result.modifiedCount });
+        // 2️⃣ Update user role based on status
+        let newRole = "user";
+
+        if (status === "approved") {
+          newRole = "rider";
+        }
+
+        await usersCollection.updateOne(
+          { email: rider.email },
+          {
+            $set: {
+              role: newRole,
+              roleUpdatedAt: new Date(),
+            },
+          }
+        );
+
+        res.json({
+          success: true,
+          message: `Rider ${status} & role set to ${newRole}`,
+        });
       } catch (error) {
         res.status(500).json({ message: error.message });
       }
