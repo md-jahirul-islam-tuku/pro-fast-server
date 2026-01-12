@@ -4,6 +4,7 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const { ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
+const { getUserByUID } = require("./");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -35,6 +36,26 @@ const verifyFirebaseToken = async (req, res, next) => {
     next();
   } catch (error) {
     res.status(403).send({ message: "Forbidden" });
+  }
+};
+
+const verifyAdmin = async (req, res, next) => {
+  try {
+    const uid = req.user?.uid;
+    if (!uid) return res.status(401).json({ message: "Unauthorized" });
+
+    const user = await getUserByUID(uid);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!user.isAdmin) {
+      return res.status(403).json({ message: "Access denied. Admins only." });
+    }
+    console.log("Admin verified ✅");
+    // Admin verified, continue
+    next();
+  } catch (err) {
+    console.error("Admin verification error:", err);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
@@ -223,24 +244,28 @@ async function run() {
       }
     });
 
-    app.get("/users/:email", async (req, res) => {
-      try {
-        const { email } = req.params;
+    app.get(
+      "/users/:email",
+      verifyFirebaseToken,
+      async (req, res) => {
+        try {
+          const { email } = req.params;
 
-        const user = await usersCollection.findOne({ email });
+          const user = await usersCollection.findOne({ email });
 
-        if (!user) {
-          return res.status(404).json({ message: "User not found" });
+          if (!user) {
+            return res.status(404).json({ message: "User not found" });
+          }
+
+          res.json({
+            success: true,
+            data: user,
+          });
+        } catch (error) {
+          res.status(500).json({ message: error.message });
         }
-
-        res.json({
-          success: true,
-          data: user,
-        });
-      } catch (error) {
-        res.status(500).json({ message: error.message });
       }
-    });
+    );
 
     app.get("/riders/pending", async (req, res) => {
       try {
