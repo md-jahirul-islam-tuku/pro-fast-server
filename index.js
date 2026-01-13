@@ -4,7 +4,6 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const { ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
-const { getUserByUID } = require("./");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -41,16 +40,12 @@ const verifyFirebaseToken = async (req, res, next) => {
 
 const verifyAdmin = async (req, res, next) => {
   try {
-    const uid = req.user?.uid;
-    if (!uid) return res.status(401).json({ message: "Unauthorized" });
-
-    const user = await getUserByUID(uid);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    if (!user.isAdmin) {
-      return res.status(403).json({ message: "Access denied. Admins only." });
+    const email = req.user.email;
+    const query = { email };
+    const user = await usersCollection.findOne(query);
+    if (!user || user.role !== "admin") {
+      return res.status(403).send({ message: "Forbidden" });
     }
-    console.log("Admin verified ✅");
     // Admin verified, continue
     next();
   } catch (err) {
@@ -164,7 +159,7 @@ async function run() {
       }
     });
 
-    app.post("/riders", async (req, res) => {
+    app.post("/riders", verifyFirebaseToken, async (req, res) => {
       try {
         const rider = req.body;
 
@@ -198,7 +193,7 @@ async function run() {
       }
     });
 
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFirebaseToken, async (req, res) => {
       try {
         const users = await usersCollection
           .find({})
@@ -215,51 +210,73 @@ async function run() {
     });
 
     // Update user role (admin <-> user)
-    app.patch("/users/role/:email", async (req, res) => {
+    app.patch(
+      "/users/role/:email",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { email } = req.params;
+          const { role } = req.body;
+
+          if (!email || !role) {
+            return res.status(400).json({ message: "Email and role required" });
+          }
+
+          const result = await usersCollection.updateOne(
+            { email },
+            {
+              $set: {
+                role,
+                roleUpdatedAt: new Date(),
+              },
+            }
+          );
+
+          res.json({
+            success: true,
+            message: `Role updated to ${role}`,
+            result,
+          });
+        } catch (err) {
+          res.status(500).json({ message: err.message });
+        }
+      }
+    );
+
+    app.get("/users/:email", verifyFirebaseToken, async (req, res) => {
       try {
         const { email } = req.params;
-        const { role } = req.body;
 
-        if (!email || !role) {
-          return res.status(400).json({ message: "Email and role required" });
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).json({ message: "User not found" });
         }
-
-        const result = await usersCollection.updateOne(
-          { email },
-          {
-            $set: {
-              role,
-              roleUpdatedAt: new Date(),
-            },
-          }
-        );
 
         res.json({
           success: true,
-          message: `Role updated to ${role}`,
-          result,
+          data: user,
         });
-      } catch (err) {
-        res.status(500).json({ message: err.message });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
       }
     });
 
     app.get(
-      "/users/:email",
+      "/riders/pending",
       verifyFirebaseToken,
+      verifyAdmin,
       async (req, res) => {
         try {
-          const { email } = req.params;
-
-          const user = await usersCollection.findOne({ email });
-
-          if (!user) {
-            return res.status(404).json({ message: "User not found" });
-          }
+          const riders = await ridersCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
 
           res.json({
             success: true,
-            data: user,
+            data: riders,
           });
         } catch (error) {
           res.status(500).json({ message: error.message });
@@ -267,23 +284,7 @@ async function run() {
       }
     );
 
-    app.get("/riders/pending", async (req, res) => {
-      try {
-        const riders = await ridersCollection
-          .find()
-          .sort({ createdAt: -1 })
-          .toArray();
-
-        res.json({
-          success: true,
-          data: riders,
-        });
-      } catch (error) {
-        res.status(500).json({ message: error.message });
-      }
-    });
-
-    app.get("/riders", async (req, res) => {
+    app.get("/riders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { status } = req.query;
 
@@ -299,59 +300,64 @@ async function run() {
       }
     });
 
-    app.patch("/riders/:id", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { status } = req.body;
+    app.patch(
+      "/riders/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { status } = req.body;
 
-        if (!["approved", "denied", "pending"].includes(status)) {
-          return res.status(400).json({ message: "Invalid status" });
-        }
-
-        const rider = await ridersCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!rider) {
-          return res.status(404).json({ message: "Rider not found" });
-        }
-
-        // 1️⃣ Update rider status
-        await ridersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status,
-              reviewedAt: new Date(),
-            },
+          if (!["approved", "denied", "pending"].includes(status)) {
+            return res.status(400).json({ message: "Invalid status" });
           }
-        );
 
-        // 2️⃣ Update user role based on status
-        let newRole = "user";
+          const rider = await ridersCollection.findOne({
+            _id: new ObjectId(id),
+          });
 
-        if (status === "approved") {
-          newRole = "rider";
-        }
-
-        await usersCollection.updateOne(
-          { email: rider.email },
-          {
-            $set: {
-              role: newRole,
-              roleUpdatedAt: new Date(),
-            },
+          if (!rider) {
+            return res.status(404).json({ message: "Rider not found" });
           }
-        );
 
-        res.json({
-          success: true,
-          message: `Rider ${status} & role set to ${newRole}`,
-        });
-      } catch (error) {
-        res.status(500).json({ message: error.message });
+          // 1️⃣ Update rider status
+          await ridersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status,
+                reviewedAt: new Date(),
+              },
+            }
+          );
+
+          // 2️⃣ Update user role based on status
+          let newRole = "user";
+
+          if (status === "approved") {
+            newRole = "rider";
+          }
+
+          await usersCollection.updateOne(
+            { email: rider.email },
+            {
+              $set: {
+                role: newRole,
+                roleUpdatedAt: new Date(),
+              },
+            }
+          );
+
+          res.json({
+            success: true,
+            message: `Rider ${status} & role set to ${newRole}`,
+          });
+        } catch (error) {
+          res.status(500).json({ message: error.message });
+        }
       }
-    });
+    );
 
     // POST: Pay to stripe
     app.post(
@@ -459,16 +465,42 @@ async function run() {
         res.status(500).json({ message: error.message });
       }
     });
-    // POST: Add Parcel
-    app.get("/payments/:email", verifyFirebaseToken, async (req, res) => {
-      const payments = await paymentsCollection
-        .find({ customerEmail: req.params.email })
-        .sort({ createdAt: -1 })
-        .toArray();
 
-      res.send(payments);
+    app.get("/payments", verifyFirebaseToken, async (req, res) => {
+      try {
+        const email = req.query.email; // optional
+        const role = req.query.role; // "admin" | "user"
+
+        const paymentsCollection = client
+          .db("proFastDB")
+          .collection("payments");
+
+        let query = {};
+
+        // If user → filter by email
+        if (role !== "admin" && email) {
+          query.customerEmail = email;
+        }
+
+        const payments = await paymentsCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.status(200).json({
+          success: true,
+          count: payments.length,
+          data: payments,
+        });
+      } catch (error) {
+        console.error("Error fetching payments:", error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to fetch payments",
+        });
+      }
     });
-    // POST: Add Parcel
+    // GET: Get Parcel by email
     app.get("/parcels/:email", verifyFirebaseToken, async (req, res) => {
       try {
         const email = req.params.email;
@@ -497,7 +529,7 @@ async function run() {
         });
       }
     });
-    // POST: Add Parcel
+    // GET: Get Parcel by ID
     app.get("/parcel/:id", verifyFirebaseToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -533,7 +565,7 @@ async function run() {
         });
       }
     });
-    // POST: Add Parcel
+    // DELETE: Delete Parcel by ID
     app.delete("/parcels/:id", verifyFirebaseToken, async (req, res) => {
       try {
         const id = req.params.id;
